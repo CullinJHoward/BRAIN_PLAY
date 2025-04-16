@@ -170,6 +170,201 @@ for (df_name in df_names) {
   assign(df_name, df)  
 }
 
+################################################################################
+######################## PREWHITEN DATA 
+
+
+# Function to pre-whiten a single time series (handles NAs)
+prewhiten_series <- function(y) {
+  # Input: y is a numeric vector (time series for one channel)
+  
+  # Check if the series is entirely NA
+  if (all(is.na(y))) {
+    return(y)  # Return NA vector if all values are NA
+  }
+  
+  # Remove NAs temporarily for AR modeling
+  valid_idx <- !is.na(y)
+  y_valid <- y[valid_idx]
+  
+  # Estimate AR(1) model on non-NA data
+  ar_model <- tryCatch(
+    {
+      ar(y_valid, order.max = 1, method = "yule-walker", na.action = na.omit)
+    },
+    error = function(e) {
+      # If AR model fails (e.g., too few valid points), return original series
+      warning("AR(1) model failed for this series. Returning original data.")
+      return(NULL)
+    }
+  )
+  
+  # If AR model fails, return original series
+  if (is.null(ar_model)) {
+    return(y)
+  }
+  
+  # Extract AR(1) coefficient
+  ar_coef <- ar_model$ar
+  
+  # Create whitening filter
+  n <- length(y)
+  whitened_y <- rep(NA, n)  # Initialize output with NAs
+  valid_y <- y  # Work on full series, including NAs
+  
+  # Apply whitening filter: y_t - phi*y_(t-1)
+  for (i in 2:n) {
+    if (!is.na(valid_y[i]) && !is.na(valid_y[i-1])) {
+      whitened_y[i] <- valid_y[i] - ar_coef * valid_y[i-1]
+    }
+  }
+  
+  # First value remains NA or original (no previous value to whiten)
+  whitened_y[1] <- valid_y[1]
+  
+  return(whitened_y)
+}
+
+# Identify all data frames with prefix "SB_"
+df_names <- ls(pattern = "^SB_")
+
+# Loop through each data frame
+for (df_name in df_names) {
+  # Get the data frame
+  df <- get(df_name)
+  
+  # Create a new data frame for pre-whitened data
+  pw_df <- df
+  
+  # Apply pre-whitening to channel columns (4:117)
+  channel_cols <- 4:117
+  valid_cols <- channel_cols[colSums(!is.na(df[, channel_cols])) > 0]  # Skip fully NA columns
+  
+  for (col in valid_cols) {
+    pw_df[[col]] <- prewhiten_series(df[[col]])
+  }
+  
+  # Create new data frame name with "PW_" prefix
+  new_df_name <- sub("^SB_", "PW_", df_name)
+  
+  # Assign the pre-whitened data frame to the new name
+  assign(new_df_name, pw_df)
+}
+
+# Clean up
+rm(df, pw_df, df_name, new_df_name, channel_cols, valid_cols, col)
+
+################################################################################
+######################## COMPARE PREWHITENED TO REGULAR TIME SERIES 
+
+# Function to plot overlaid time series for one channel
+plot_overlaid_series <- function(sb_data, pw_data, time_col, channel_col, channel_name, df_name) {
+  # Extract time and channel data
+  time <- sb_data[[time_col]]
+  sb_series <- sb_data[[channel_col]]
+  pw_series <- pw_data[[channel_col]]
+  
+  # Check if channel is entirely NA
+  if (all(is.na(sb_series)) || all(is.na(pw_series))) {
+    warning(paste("Channel", channel_name, "in", df_name, "is entirely NA. Skipping plot."))
+    return(NULL)
+  }
+  
+  # Create data frame for plotting
+  plot_data <- data.frame(
+    Time = time,
+    Original = sb_series,
+    Prewhitened = pw_series
+  )
+  
+  # Overlaid time series plot
+  p <- ggplot(plot_data, aes(x = Time)) +
+    geom_line(aes(y = Original, color = "Original"), na.rm = TRUE) +
+    geom_line(aes(y = Prewhitened, color = "Pre-whitened"), na.rm = TRUE, linetype = "dashed") +
+    labs(
+      title = paste(df_name, "Channel", channel_name),
+      x = "Time (s)",
+      y = "fNIRS Signal",
+      color = "Series"
+    ) +
+    theme_minimal() +
+    scale_color_manual(values = c("Original" = "blue", "Pre-whitened" = "red"))
+  
+  return(p)
+}
+
+# Identify SB_ data frames
+sb_df_names <- ls(pattern = "^SB_")
+
+# Select a subset of data frames and channels (e.g., first 2 data frames, channels 4-6)
+max_dfs <- min(2, length(sb_df_names))  # Plot up to 2 data frames
+channels_to_plot <- 4:6  # Columns 4, 5, 6
+
+# Loop through selected data frames
+for (df_name in sb_df_names[1:max_dfs]) {
+  # Get corresponding PW_ data frame
+  pw_df_name <- sub("^SB_", "PW_", df_name)
+  
+  # Check if PW_ data frame exists
+  if (!exists(pw_df_name)) {
+    warning(paste("Pre-whitened data frame", pw_df_name, "not found. Skipping."))
+    next
+  }
+  
+  # Get data frames
+  sb_df <- get(df_name)
+  pw_df <- get(pw_df_name)
+  
+  # Assume TIME is a column named "TIME"
+  time_col <- "TIME"
+  
+  # Loop through selected channels
+  for (col in channels_to_plot) {
+    if (col <= ncol(sb_df) && col <= ncol(pw_df)) {
+      channel_name <- colnames(sb_df)[col]
+      p <- plot_overlaid_series(sb_df, pw_df, time_col, col, channel_name, df_name)
+      if (!is.null(p)) {
+        print(p)
+      }
+    }
+  }
+}
+
+# Clean up
+rm(sb_df, pw_df, df_name, pw_df_name, col, p)
+
+######## CHECK ACF 
+
+# Pick one data frame and channel
+df_name <- "SB_1026"  # Replace with your data frame name
+pw_df_name <- sub("^SB_", "PW_", df_name)
+channel_col <- 4  # First channel (column 4)
+channel_name <- colnames(get(df_name))[channel_col]
+
+# Get data
+sb_series <- get(df_name)[[channel_col]]
+pw_series <- get(pw_df_name)[[channel_col]]
+
+# Compute ACFs
+acf_original <- acf(sb_series, na.action = na.pass, plot = FALSE)
+acf_prewhitened <- acf(pw_series, na.action = na.pass, plot = FALSE)
+
+# Create ACF data frame
+acf_data <- data.frame(
+  Lag = c(acf_original$lag, acf_prewhitened$lag),
+  ACF = c(acf_original$acf, acf_prewhitened$acf),
+  Series = rep(c("Original", "Pre-whitened"), each = length(acf_original$lag))
+)
+
+# Plot ACF
+ggplot(acf_data, aes(x = Lag, y = ACF, fill = Series)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.4), width = 0.45) +
+  labs(title = paste(df_name, "Channel", channel_name, "ACF"),
+       x = "Lag", y = "Autocorrelation") +
+  theme_minimal() +
+  scale_fill_manual(values = c("Original" = "blue", "Pre-whitened" = "red"))
+
+
 
 ################################################################################
 ######################## SAVE DATA
@@ -180,7 +375,7 @@ for (df_name in df_names) {
 # WITHIN COLUMN MISSINGNESS HANDLED USING CUBIC SPLINE INTERPOLATION 
 # SMOOTHED USING THE Savitzky-Golay filter
 # REGIONS IDENTIFIED AND REACHED COMPUTED REGULAR MEANS
-
+# PREWHITEN THE DATA 
 
 # Define the output folder path
 output_folder <- "FINAL_CLEAN_TASK_DATA\\SENBACK_T2\\CHANNELS_W_REGIONS"
@@ -191,30 +386,36 @@ if (!dir.exists(output_folder)) {
 }
 
 # ID FILES TO SAVE 
-df_list <- ls(pattern = "^SB_\\d{4}$")
+RAW_df_list <- ls(pattern = "^SB_\\d{4}$")
+PW_df_list <- ls(pattern = "^PW_\\d{4}$")
 
 # Check if any data frames were found
-if (length(df_list) == 0) {
-  warning("No data frames found with pattern 'SB_XXXX'")
+if (length(RAW_df_list) == 0) {
+  warning("No data frames found with pattern '^SB_\\d{4}$'")
 } else {
-  # Loop through all data frames with the prefix "SB_" followed by 4 digits
-  for (df_name in df_list) {
-    # Get the data frame by its name
+  for (df_name in RAW_df_list) {
     df <- get(df_name)
-    
-    # Extract the 4-digit ID from the data frame name
     id <- sub("^SB_(\\d{4})$", "\\1", df_name)
-    
-    # Define the file path for saving the CSV
     file_path <- file.path(output_folder, paste0("DORRY3_FNIRS_CHANNELS_REGIONS_", id, "_SENBACK_T2.csv"))
-    
-    # Save the data frame as a CSV
     write.csv(df, file_path, row.names = FALSE)
-    
-    # Print the name of the saved file
     message(paste("Saved:", file_path))
   }
 }
+
+## SAVE PREWHITENED DATA 
+
+if (length(PW_df_list) == 0) {
+  warning("No data frames found with pattern '^PW_\\d{4}$'")
+} else {
+  for (df_name in PW_df_list) {
+    df <- get(df_name)
+    id <- sub("^PW_(\\d{4})$", "\\1", df_name)
+    file_path <- file.path(output_folder, paste0("DORRY3_FNIRS_CHANNELS_REGIONS_", id, "_SENBACK_T2_PW.csv"))
+    write.csv(df, file_path, row.names = FALSE)
+    message(paste("Saved:", file_path))
+  }
+}
+
 
 ### ALSO SAVE THE REGIONS OBJECT TO SAVE A HEADACHE ###
 
