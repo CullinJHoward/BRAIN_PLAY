@@ -116,12 +116,9 @@ for (df_name in ls(pattern = "^SB_\\d{4}$")) {
 }
 
 ################################################################################
-###################### COMPUTE WEIGHTED AVERAGED REGION TIME SERIES 
+###################### COMPUTE AVERAGED REGION TIME SERIES 
 
-###### CREATE A FUNCTION TO COMPUTE SE-WEIGHTED REGION AVERAGES
-## SKIP ALL NA COLUMNS 
-
-weighted_avg <- function(df, channel_names) {
+regular_mean <- function(df, channel_names) {
   # Subset the relevant channels
   channel_data <- df[, channel_names, drop = FALSE]
   
@@ -133,19 +130,27 @@ weighted_avg <- function(df, channel_names) {
     return(rep(NA, nrow(df)))
   }
   
-  # Compute standard error for each channel (ignoring NA values)
-  se <- apply(channel_data, 2, function(x) sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x))))
+  # Compute regular mean time series (ignoring NA values)
+  mean_series <- rowMeans(channel_data, na.rm = TRUE)
   
-  # Compute inverse standard error weights
-  weights <- 1 / se
+  return(mean_series)
+}
+
+#### APPLY THE FUNCTION 
+
+# MAKE AN OBJECT THAT LISTS ALL THE fNIRS DATA FRAME 
+df_names <- ls(pattern = "^SB_\\d{4}$")
+
+# LOOP THROUGH AND APPLY THE REGULAR MEANS FUNCTION
+for (df_name in df_names) {
+  df <- get(df_name)  
   
-  # Normalize weights to sum to 1 (handling cases where all weights are NA)
-  weights <- weights / sum(weights, na.rm = TRUE)
+  # COMPUTE EACH REGIONS REGULAR MEAN 
+  for (region in names(regions)) {
+    df[[region]] <- regular_mean(df, regions[[region]])
+  }
   
-  # Compute weighted average time series
-  weighted_series <- rowSums(t(t(channel_data) * weights), na.rm = TRUE)
-  
-  return(weighted_series)
+  assign(df_name, df)  
 }
 
 #### APPLY THE FUNCTION 
@@ -159,7 +164,7 @@ for (df_name in df_names) {
   
   # COMPUTE EACH REGIONS WEIGHTED AVERAGE 
   for (region in names(regions)) {
-    df[[region]] <- weighted_avg(df, regions[[region]])
+    df[[region]] <- regular_mean(df, regions[[region]])
   }
   
   assign(df_name, df)  
@@ -174,7 +179,7 @@ for (df_name in df_names) {
 # IMPROBABLE VALES EXCEEDING -100/+100 MOVED TO NA 
 # WITHIN COLUMN MISSINGNESS HANDLED USING CUBIC SPLINE INTERPOLATION 
 # SMOOTHED USING THE Savitzky-Golay filter
-# REGIONS IDENTIFIED AND REACHED COMPUTED SE-WEIGHTED MEANS
+# REGIONS IDENTIFIED AND REACHED COMPUTED REGULAR MEANS
 
 
 # Define the output folder path
